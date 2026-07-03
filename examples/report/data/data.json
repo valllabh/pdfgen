@@ -1,0 +1,22 @@
+{
+  "title": "Q3 Security Operations Review",
+  "author": "VJ",
+  "date": "auto",
+  "sections": [
+    {
+      "heading": "Executive Summary",
+      "body": "This quarter we processed 1,240 alerts with a mean time to triage of 11 minutes. Three incidents escalated to SEV1, all contained within the same business day.",
+      "subsections": [
+        { "heading": "Headline Metrics", "body": "MTTD 9m, MTTR 47m, false positive rate 12%." }
+      ]
+    },
+    {
+      "heading": "Detection Coverage",
+      "body": "Coverage grew from 71% to 78% of MITRE ATT&CK techniques following the rollout of new Sigma rules."
+    },
+    {
+      "heading": "Recommendations",
+      "body": "Prioritize enrichment automation and reduce manual context switching between console tabs."
+    }
+  ]
+}

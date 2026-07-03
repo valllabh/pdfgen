@@ -1,0 +1,10 @@
+{
+  "name": "report",
+  "description": "Multi section report with cover, TOC and bookmarked headings.",
+  "variables": {
+    "title": {"type": "string", "required": true, "description": "Report title"},
+    "author": {"type": "string", "required": false, "default": "Anonymous"},
+    "date": {"type": "string", "required": false, "default": "auto"},
+    "sections": {"type": "array", "required": true, "description": "Array of {heading, body, subsections?}"}
+  }
+}

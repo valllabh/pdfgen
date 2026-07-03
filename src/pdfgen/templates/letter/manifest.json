@@ -1,0 +1,11 @@
+{
+  "name": "letter",
+  "description": "Single page business letter.",
+  "variables": {
+    "from": {"type": "string", "required": true},
+    "to": {"type": "string", "required": true},
+    "date": {"type": "string", "required": false, "default": "auto"},
+    "subject": {"type": "string", "required": true},
+    "body": {"type": "string", "required": true}
+  }
+}

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{ subject }}</title>
+<style>
+  @page { size: A4; margin: 25mm; }
+  body { font-family: "Times New Roman", Georgia, serif; font-size: 11pt; line-height: 1.5; color: #111; }
+  .date { text-align: right; margin-bottom: 1em; }
+  .label { font-weight: bold; margin-top: 1em; }
+  .subject { font-weight: bold; font-size: 12pt; margin: 1.5em 0 1em; }
+  .body { white-space: pre-wrap; }
+</style>
+</head>
+<body>
+  <div class="date">{% if date and date != "auto" %}{{ date }}{% endif %}</div>
+  <div class="label">From</div>
+  <div>{{ from }}</div>
+  <div class="label">To</div>
+  <div>{{ to }}</div>
+  <div class="subject">Re: {{ subject }}</div>
+  <div class="body">{{ body }}</div>
+</body>
+</html>

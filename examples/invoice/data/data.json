@@ -1,0 +1,13 @@
+{
+  "seller": "TotalAppSec LLC\n123 Market St\nSan Francisco, CA",
+  "buyer": "ACME Corp\n500 Elm Ave\nAustin, TX",
+  "invoiceNumber": "INV-2026-0042",
+  "date": "auto",
+  "currency": "USD",
+  "taxRate": 0.08,
+  "items": [
+    { "description": "Security assessment (5 days)", "qty": 1, "unitPrice": 12000 },
+    { "description": "Sigma rule pack (annual)", "qty": 1, "unitPrice": 4500 },
+    { "description": "Onsite workshop", "qty": 2, "unitPrice": 1800 }
+  ]
+}

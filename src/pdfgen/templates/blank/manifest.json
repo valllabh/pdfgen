@@ -1,0 +1,8 @@
+{
+  "name": "blank",
+  "description": "Minimal blank template. One title and one body. Good starting point for custom templates.",
+  "variables": {
+    "title": {"type": "string", "required": true},
+    "body": {"type": "string", "required": false, "default": ""}
+  }
+}
