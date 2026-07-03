@@ -44,21 +44,74 @@ def _make_env(search_path: Path) -> Environment:
 def resolve_template_dir(
     name: str | None = None,
     template_dir: Path | None = None,
+    search_cwd: bool = True,
 ) -> Path:
-    """Resolve which directory holds the template.html to render."""
+    """Resolve which directory holds the template.html to render.
+
+    Resolution order:
+      1. template_dir (explicit directory containing template.html)
+      2. bundled template named <name> in src/pdfgen/templates/
+      3. a template named <name> discovered in the current working tree
+         (any directory containing manifest.json + template.html whose
+         manifest name matches, or whose directory name matches)
+    """
     if template_dir is not None:
         if not (template_dir / "template.html").exists():
             raise FileNotFoundError(f"template.html not found in {template_dir}")
         return template_dir
     if name:
         cand = BUNDLED_TEMPLATES_DIR / name
-        if not cand.exists():
-            available = sorted(p.name for p in BUNDLED_TEMPLATES_DIR.iterdir() if p.is_dir())
-            raise FileNotFoundError(
-                f"template '{name}' not found. Available: {', '.join(available)}"
-            )
-        return cand
+        if cand.exists():
+            return cand
+        if search_cwd:
+            local = find_local_template(name)
+            if local is not None:
+                return local
+        available = sorted(p.name for p in BUNDLED_TEMPLATES_DIR.iterdir() if p.is_dir())
+        local_names = [t["name"] for t in discover_templates(Path.cwd())] if search_cwd else []
+        raise FileNotFoundError(
+            f"template '{name}' not found. "
+            f"Bundled: {', '.join(available) or '(none)'}. "
+            f"Local: {', '.join(local_names) or '(none)'}."
+        )
     raise ValueError("either --template or --template-dir is required")
+
+
+def discover_templates(root: Path) -> list[dict[str, Any]]:
+    """Recursively find templates under root.
+
+    A template is any directory containing both manifest.json and template.html.
+    Returns a list of dicts: {name, description, path, bundled?}.
+    """
+    out: list[dict[str, Any]] = []
+    if not root.exists() or not root.is_dir():
+        return out
+    for manifest in root.rglob("manifest.json"):
+        tdir = manifest.parent
+        if not (tdir / "template.html").exists():
+            continue
+        try:
+            spec = json.loads(manifest.read_text())
+        except Exception:
+            spec = {}
+        out.append({
+            "name": spec.get("name") or tdir.name,
+            "description": spec.get("description", ""),
+            "path": tdir,
+        })
+    return out
+
+
+def find_local_template(name: str, root: Path | None = None) -> Path | None:
+    """Find a template by name in the current working tree.
+
+    Matches either the manifest `name` field or the directory name.
+    """
+    root = root or Path.cwd()
+    for t in discover_templates(root):
+        if t["name"] == name or t["path"].name == name:
+            return t["path"]
+    return None
 
 
 def _defaults_from_manifest(template_dir: Path) -> dict[str, Any]:

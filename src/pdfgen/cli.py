@@ -25,7 +25,13 @@ from . import __version__
 from .merge import Bookmark, add_outline, extract_outline, merge_pdfs
 from .renderer import PdfOptions, render_html_to_pdf
 from .scaffold import scaffold_project, scaffold_template, _sample_data_from_manifest
-from .templating import BUNDLED_TEMPLATES_DIR, load_data, render_template, resolve_template_dir
+from .templating import (
+    BUNDLED_TEMPLATES_DIR,
+    discover_templates,
+    load_data,
+    render_template,
+    resolve_template_dir,
+)
 
 app = typer.Typer(add_completion=False, help="Template driven PDF generation CLI.")
 console = Console()
@@ -45,11 +51,18 @@ def main(
 
 
 @app.command()
-def templates() -> None:
-    """List bundled templates with their descriptions."""
-    table = Table(title="Bundled templates")
-    table.add_column("name", style="cyan")
-    table.add_column("description")
+def templates(
+    cwd: bool = typer.Option(True, "--cwd/--no-cwd", help="Also list templates discovered in the current directory tree."),
+) -> None:
+    """List bundled templates and any templates found in the current directory tree.
+
+    A template is any directory containing both manifest.json and template.html.
+    Discovery is recursive from the current working directory.
+    """
+    # Bundled
+    bundled = Table(title="Bundled templates")
+    bundled.add_column("name", style="cyan")
+    bundled.add_column("description")
     for d in sorted(BUNDLED_TEMPLATES_DIR.iterdir()):
         if not d.is_dir():
             continue
@@ -60,7 +73,28 @@ def templates() -> None:
                 desc = json.loads(manifest.read_text()).get("description", "")
             except Exception:
                 pass
-        table.add_row(d.name, desc)
+        bundled.add_row(d.name, desc)
+    console.print(bundled)
+
+    if not cwd:
+        return
+
+    # Local (recursive from cwd)
+    local = discover_templates(Path.cwd())
+    # Exclude bundled templates that happen to be under cwd (e.g. running from repo root).
+    bundled_resolved = BUNDLED_TEMPLATES_DIR.resolve()
+    local = [t for t in local if t["path"].resolve() != bundled_resolved and
+             not t["path"].resolve().is_relative_to(bundled_resolved)]
+    if not local:
+        console.print("[dim]No local templates found in current directory.[/dim]")
+        console.print("[dim]A template is any dir with manifest.json + template.html.[/dim]")
+        return
+    table = Table(title="Local templates (current directory tree)")
+    table.add_column("name", style="cyan")
+    table.add_column("description")
+    table.add_column("path", style="dim")
+    for t in sorted(local, key=lambda x: x["name"]):
+        table.add_row(t["name"], t["description"], str(t["path"]))
     console.print(table)
 
 
