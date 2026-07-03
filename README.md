@@ -4,31 +4,48 @@ Template driven PDF generation CLI for agents and humans. HTML templates (Jinja2
 
 Uses your system Google Chrome or Microsoft Edge directly, no Playwright Chromium download required.
 
+## Templates
+
+A template is any `.html` file with `pdfgen:` meta tags in its `<head>` (inspired by Open Graph meta tags). No manifest.json, no fixed directory layout needed.
+
+```html
+<meta name="pdfgen:name" content="my-template">
+<meta name="pdfgen:description" content="A custom template">
+<meta name="pdfgen:variable" content="title" data-type="string" data-required="true">
+<meta name="pdfgen:variable" content="body" data-type="string" data-default="">
+```
+
+- `pdfgen:name` (required) - identifies the file as a template
+- `pdfgen:description` (optional) - human readable description
+- `pdfgen:variable` (optional, repeatable) - declares a variable with `data-type`, `data-required`, `data-default`
+
+Templates are discovered from three sources (first match wins for `--template <name>`):
+1. **Bundled** - shipped with pdfgen in `src/pdfgen/templates/`
+2. **Local** - any `.html` with `pdfgen:name` found recursively in the current working directory
+3. **.pdfgen** - `.pdfgen/templates/` walking up from cwd to home (project -> parent dirs -> `~/.pdfgen/templates/`)
+
 ## Install
 
 ```bash
 make install
 ```
 
-That is it. The CLI auto detects system Chrome (then Edge) and uses it via Playwright's `channel` launch. If you have neither, run `make install-browser` to download Playwright's bundled Chromium.
+The CLI auto detects system Chrome (then Edge). If you have neither, run `make install-browser`.
 
 ## Global access
-
-The `pdfgen` binary lives in `.venv/bin/pdfgen`. Symlink it onto your PATH:
 
 ```bash
 mkdir -p ~/.local/bin
 ln -sf "$PWD/.venv/bin/pdfgen" ~/.local/bin/pdfgen
 ```
 
-Now `pdfgen` works from anywhere.
-
 ## Usage
 
 ```bash
-pdfgen templates                                   # list bundled templates
-pdfgen new my-report --template report             # scaffold a project
-pdfgen build -t report -d data.json -o report.pdf  # build a PDF
+pdfgen templates                                   # list all templates
+pdfgen new my-report --template report             # scaffold a template
+pdfgen build -t report -d data.json -o report.pdf  # build from template name
+pdfgen build --html my.html -o out.pdf             # render any HTML file directly
 pdfgen merge a.pdf b.pdf -o merged.pdf             # merge PDFs
 pdfgen outline report.pdf                          # show bookmarks
 pdfgen outline report.pdf --add "Intro@1" --add "Body@3"
@@ -38,8 +55,8 @@ pdfgen info report.pdf                             # page count, size, outline
 ## Build options
 
 ```
---template NAME        bundled template (report, letter, invoice, blank)
---template-dir PATH    custom template directory containing template.html
+--template NAME        template name (bundled, local or .pdfgen)
+--template-dir PATH    directory with template.html, or a direct .html file
 --html PATH            pre rendered HTML file (skips templating)
 --data PATH            JSON or YAML data file
 --output PATH          output PDF
@@ -53,15 +70,7 @@ pdfgen info report.pdf                             # page count, size, outline
 
 Browser selection priority: `--browser` flag > `PDFGEN_BROWSER` env var > auto detect (system Chrome, then Edge).
 
-## Templates
-
-Templates are discovered from three sources (first match wins when using `--template <name>`):
-
-1. **Bundled** - shipped with pdfgen in `src/pdfgen/templates/`
-2. **Local** - any directory in the current working tree with `manifest.json` + `template.html` (recursive)
-3. **.pdfgen** - `.pdfgen/templates/` directories walking up from cwd to home (project -> parent dirs -> user level at `~/.pdfgen/templates/`)
-
-A template is any directory containing both `manifest.json` and `template.html`.
+## Bundled templates
 
 | name    | description                                          |
 |---------|------------------------------------------------------|
@@ -70,26 +79,36 @@ A template is any directory containing both `manifest.json` and `template.html`.
 | invoice | invoice with line items, tax and totals              |
 | blank   | minimal one title + body template, good starting point |
 
-To create a custom template, copy one and edit:
+## Creating a custom template
 
-```bash
-# local template (in current directory)
-pdfgen new custom-doc --template blank
-# edit custom-doc/template.html and custom-doc/data.json
-pdfgen build --template-dir custom-doc --data custom-doc/data.json -o custom-doc.pdf
+Just add `pdfgen:` meta tags to any HTML file:
 
-# user level template (available everywhere via ~/.pdfgen/templates/)
-pdfgen new my-tpl --template blank --user
-# edit ~/.pdfgen/templates/my-tpl/template.html and data.json
-pdfgen build -t my-tpl -d ~/.pdfgen/templates/my-tpl/data.json -o out.pdf
-
-# project level template (in .pdfgen/templates/ at project root)
-mkdir -p .pdfgen/templates/my-tpl
-# add template.html and manifest.json there
-pdfgen build -t my-tpl -d data.json -o out.pdf
+```html
+<!DOCTYPE html>
+<html><head>
+<meta name="pdfgen:name" content="my-doc">
+<meta name="pdfgen:description" content="My custom document">
+<meta name="pdfgen:variable" content="title" data-type="string" data-required="true">
+<meta name="pdfgen:variable" content="items" data-type="array" data-required="true">
+<title>{{ title }}</title>
+<style>@page{size:A4;margin:20mm}body{font-family:sans-serif}</style>
+</head><body>
+<h1>{{ title }}</h1>
+{% for item in items %}<p>{{ item }}</p>{% endfor %}
+</body></html>
 ```
 
-`pdfgen templates` lists all three sources.
+Save it anywhere in your project and `pdfgen templates` will find it. Or scaffold from a bundled template:
+
+```bash
+# local template
+pdfgen new custom-doc --template blank
+pdfgen build --template-dir custom-doc --data custom-doc/data.json -o custom-doc.pdf
+
+# user level template (available everywhere)
+pdfgen new my-tpl --template blank --user
+pdfgen build -t my-tpl -d ~/.pdfgen/templates/my-tpl/data.json -o out.pdf
+```
 
 ## Examples
 
@@ -102,10 +121,10 @@ See `examples/{report,letter,invoice}/data/data.json` for sample data shapes.
 ## Architecture
 
 ```
-data (JSON/YAML) + template (Jinja2 HTML)
+data (JSON/YAML) + template (HTML with pdfgen: meta tags)
         |
         v
-   render_template()  ->  intermediate HTML
+   render_template()  ->  intermediate HTML (Jinja2)
         |
         v
    render_html_to_pdf()  (Playwright/Chromium, swappable)

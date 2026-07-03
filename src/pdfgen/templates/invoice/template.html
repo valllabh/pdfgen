@@ -2,6 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="pdfgen:name" content="invoice">
+<meta name="pdfgen:description" content="Invoice with line items and totals.">
+<meta name="pdfgen:variable" content="seller" data-type="string" data-required="true">
+<meta name="pdfgen:variable" content="buyer" data-type="string" data-required="true">
+<meta name="pdfgen:variable" content="invoiceNumber" data-type="string" data-required="true">
+<meta name="pdfgen:variable" content="date" data-type="string" data-default="auto">
+<meta name="pdfgen:variable" content="currency" data-type="string" data-default="USD">
+<meta name="pdfgen:variable" content="items" data-type="array" data-required="true">
+<meta name="pdfgen:variable" content="taxRate" data-type="number" data-default="0">
 <title>Invoice {{ invoiceNumber }}</title>
 <style>
   @page { size: A4; margin: 20mm; }

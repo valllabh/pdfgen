@@ -4,20 +4,31 @@ Templates are HTML files with Jinja2 variables. Data is loaded from JSON or
 YAML and injected. The result is a self contained HTML file ready for the
 renderer.
 
+A template is a single .html file with pdfgen meta tags in its <head>
+(inspired by Open Graph meta tags). No manifest.json or fixed directory
+layout required.
+
+Meta tag format (standard HTML, in <head>):
+  <meta name="pdfgen:name" content="my-template">
+  <meta name="pdfgen:description" content="A custom template">
+  <meta name="pdfgen:variable" content="title" data-type="string" data-required="true">
+  <meta name="pdfgen:variable" content="body" data-type="string" data-default="">
+
+Required: pdfgen:name (identifies the file as a template).
+Optional: pdfgen:description, pdfgen:variable (repeatable).
+
 Template resolution order (first match wins):
-  1. --template-dir <p>  -> explicit directory containing template.html
-  2. --template <name>   -> bundled template (src/pdfgen/templates/<name>)
-  3. <name> in cwd tree  -> any dir with manifest.json + template.html
-                            discovered recursively from cwd
-  4. <name> in .pdfgen   -> .pdfgen/templates/<name> walking up from cwd
-                            to home (project -> parent dirs -> user level)
-  5. --html <file>       -> a single ad hoc HTML file (no data binding unless
-                           it contains Jinja2 syntax; we still render it)
+  1. --html <file>        -> a single HTML file (rendered directly)
+  2. --template-dir <p>   -> a directory containing template.html
+  3. --template <name>    -> bundled template (src/pdfgen/templates/<name>/template.html)
+  4. <name> in cwd tree   -> any .html with pdfgen:name=<name> discovered
+                             recursively from cwd
+  5. <name> in .pdfgen    -> .pdfgen/templates/ walking up from cwd to home
 """
 from __future__ import annotations
 
 import json
-import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +41,17 @@ BUNDLED_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 USER_TEMPLATES_DIR = Path.home() / ".pdfgen" / "templates"
 # Marker directory name walked up from cwd to discover project/parent templates.
 PDFGEN_DIR_NAME = ".pdfgen"
+# Meta tag name prefix that identifies pdfgen template metadata.
+META_PREFIX = "pdfgen:"
+
+# Regex to extract <meta> tags from HTML head. Captures name + attributes.
+META_RE = re.compile(
+    r'<meta\s+([^>]*?)/?>',
+    re.IGNORECASE,
+)
+ATTR_RE = re.compile(
+    r'(\w[\w-]*)\s*=\s*"([^"]*)"|(\w[\w-]*)\s*=\s*\'([^\']*)\'',
+)
 
 
 def load_data(path: Path) -> dict[str, Any]:
@@ -50,37 +72,125 @@ def _make_env(search_path: Path) -> Environment:
     )
 
 
-def resolve_template_dir(
+# ---------- meta tag parsing ----------
+
+def _parse_meta_attrs(attr_string: str) -> dict[str, str]:
+    """Parse HTML attribute string into a dict."""
+    attrs: dict[str, str] = {}
+    for m in ATTR_RE.finditer(attr_string):
+        key = m.group(1) or m.group(3)
+        val = m.group(2) or m.group(4)
+        if key:
+            attrs[key.lower()] = val
+    return attrs
+
+
+def parse_template_meta(html_path: Path) -> dict[str, Any]:
+    """Parse pdfgen meta tags from an HTML file.
+
+    Returns dict with keys: name, description, variables (list of dicts),
+    raw (the matched meta tag strings). Returns empty dict if no pdfgen meta
+    tags are found.
+    """
+    try:
+        text = html_path.read_text()
+    except Exception:
+        return {}
+    out: dict[str, Any] = {"name": "", "description": "", "variables": []}
+    for m in META_RE.finditer(text):
+        attrs = _parse_meta_attrs(m.group(1))
+        name_attr = attrs.get("name", "")
+        if not name_attr.lower().startswith(META_PREFIX):
+            continue
+        key = name_attr[len(META_PREFIX):].lower()
+        content = attrs.get("content", "")
+        if key == "name":
+            out["name"] = content
+        elif key == "description":
+            out["description"] = content
+        elif key == "variable":
+            var = {
+                "name": content,
+                "type": attrs.get("data-type", "string"),
+                "required": attrs.get("data-required", "false").lower() == "true",
+            }
+            # Only include default if the attribute was present (even if empty string).
+            if "data-default" in attrs:
+                var["default"] = attrs["data-default"]
+            out["variables"].append(var)
+    if not out["name"]:
+        return {}
+    return out
+
+
+def meta_to_manifest(meta: dict[str, Any]) -> dict[str, Any]:
+    """Convert parsed meta tags into a manifest style dict for internal use."""
+    variables: dict[str, Any] = {}
+    for v in meta.get("variables", []):
+        vn = v.pop("name")
+        variables[vn] = v
+    return {
+        "name": meta.get("name", ""),
+        "description": meta.get("description", ""),
+        "variables": variables,
+    }
+
+
+# ---------- template resolution ----------
+
+def resolve_template(
     name: str | None = None,
     template_dir: Path | None = None,
+    html: Path | None = None,
     search_cwd: bool = True,
-) -> Path:
-    """Resolve which directory holds the template.html to render.
+) -> tuple[Path, dict[str, Any]]:
+    """Resolve a template to (html_path, manifest_dict).
 
-    Resolution order (first match wins):
-      1. template_dir (explicit directory containing template.html)
-      2. bundled template named <name> in src/pdfgen/templates/
-      3. <name> discovered in the current working tree (recursive)
-      4. <name> in .pdfgen/templates/ walking up from cwd to home
+    Resolution order:
+      1. html (explicit file)
+      2. template_dir (directory with template.html)
+      3. bundled template named <name>
+      4. <name> discovered in cwd tree (recursive)
+      5. <name> in .pdfgen/templates/ walking up to home
     """
+    if html is not None:
+        meta = parse_template_meta(html)
+        manifest = meta_to_manifest(meta) if meta else {"name": html.stem, "description": "", "variables": {}}
+        return html, manifest
+
     if template_dir is not None:
-        if not (template_dir / "template.html").exists():
+        tfile = template_dir / "template.html"
+        if not tfile.exists():
+            # Maybe template_dir IS the html file.
+            if template_dir.is_file() and template_dir.suffix == ".html":
+                meta = parse_template_meta(template_dir)
+                manifest = meta_to_manifest(meta) if meta else {"name": template_dir.stem, "description": "", "variables": {}}
+                return template_dir, manifest
             raise FileNotFoundError(f"template.html not found in {template_dir}")
-        return template_dir
+        meta = parse_template_meta(tfile)
+        manifest = meta_to_manifest(meta) if meta else {"name": template_dir.name, "description": "", "variables": {}}
+        return tfile, manifest
+
     if name:
-        # 2. Bundled
-        cand = BUNDLED_TEMPLATES_DIR / name
+        # 3. Bundled
+        cand = BUNDLED_TEMPLATES_DIR / name / "template.html"
         if cand.exists():
-            return cand
-        # 3. Local cwd tree (recursive)
+            meta = parse_template_meta(cand)
+            manifest = meta_to_manifest(meta) if meta else {"name": name, "description": "", "variables": {}}
+            return cand, manifest
+        # 4. Local cwd tree (recursive)
         if search_cwd:
-            local = find_local_template(name)
+            local = find_template_by_name(name)
             if local is not None:
-                return local
-        # 4. .pdfgen/templates/ walking up from cwd to home
+                meta = parse_template_meta(local)
+                manifest = meta_to_manifest(meta) if meta else {"name": name, "description": "", "variables": {}}
+                return local, manifest
+        # 5. .pdfgen/templates/ walking up to home
         dot = find_dotpdfgen_template(name)
         if dot is not None:
-            return dot
+            meta = parse_template_meta(dot)
+            manifest = meta_to_manifest(meta) if meta else {"name": name, "description": "", "variables": {}}
+            return dot, manifest
         available = sorted(p.name for p in BUNDLED_TEMPLATES_DIR.iterdir() if p.is_dir())
         local_names = [t["name"] for t in discover_templates(Path.cwd())] if search_cwd else []
         dot_names = [t["name"] for t in discover_dotpdfgen_templates()]
@@ -90,52 +200,43 @@ def resolve_template_dir(
             f"Local: {', '.join(local_names) or '(none)'}. "
             f"User/.pdfgen: {', '.join(dot_names) or '(none)'}."
         )
-    raise ValueError("either --template or --template-dir is required")
+    raise ValueError("provide --template, --template-dir or --html")
 
+
+# ---------- discovery ----------
 
 def discover_templates(root: Path) -> list[dict[str, Any]]:
     """Recursively find templates under root.
 
-    A template is any directory containing both manifest.json and template.html.
-    Returns a list of dicts: {name, description, path, bundled?}.
+    A template is any .html file with a pdfgen:name meta tag. Returns a list
+    of dicts: {name, description, path}.
     """
     out: list[dict[str, Any]] = []
     if not root.exists() or not root.is_dir():
         return out
-    for manifest in root.rglob("manifest.json"):
-        tdir = manifest.parent
-        if not (tdir / "template.html").exists():
+    for html in root.rglob("*.html"):
+        meta = parse_template_meta(html)
+        if not meta or not meta["name"]:
             continue
-        try:
-            spec = json.loads(manifest.read_text())
-        except Exception:
-            spec = {}
         out.append({
-            "name": spec.get("name") or tdir.name,
-            "description": spec.get("description", ""),
-            "path": tdir,
+            "name": meta["name"],
+            "description": meta.get("description", ""),
+            "path": html,
         })
     return out
 
 
-def find_local_template(name: str, root: Path | None = None) -> Path | None:
-    """Find a template by name in the current working tree.
-
-    Matches either the manifest `name` field or the directory name.
-    """
+def find_template_by_name(name: str, root: Path | None = None) -> Path | None:
+    """Find a template by name in the current working tree."""
     root = root or Path.cwd()
     for t in discover_templates(root):
-        if t["name"] == name or t["path"].name == name:
+        if t["name"] == name or t["path"].stem == name:
             return t["path"]
     return None
 
 
 def dotpdfgen_dirs(start: Path | None = None) -> list[Path]:
-    """Return .pdfgen directories walking up from start (cwd) to home.
-
-    Order: closest to cwd first, then parents, then ~/.pdfgen last.
-    Duplicates are removed while preserving order.
-    """
+    """Return .pdfgen directories walking up from start (cwd) to home."""
     start = (start or Path.cwd()).resolve()
     home = Path.home().resolve()
     dirs: list[Path] = []
@@ -151,7 +252,6 @@ def dotpdfgen_dirs(start: Path | None = None) -> list[Path]:
         if cur == home or cur.parent == cur:
             break
         cur = cur.parent
-    # Always include ~/.pdfgen even if cwd is not under home.
     user_dir = (home / PDFGEN_DIR_NAME).resolve()
     if user_dir not in seen and user_dir.is_dir():
         dirs.append(user_dir)
@@ -159,19 +259,10 @@ def dotpdfgen_dirs(start: Path | None = None) -> list[Path]:
 
 
 def discover_dotpdfgen_templates() -> list[dict[str, Any]]:
-    """Discover templates in all .pdfgen/templates/ dirs from cwd up to home.
-
-    Each .pdfgen dir is treated as a templates root: we look for either
-    .pdfgen/templates/<name>/{manifest.json,template.html} or
-    .pdfgen/<name>/{manifest.json,template.html}.
-    Returns list of {name, description, path, source} where source is the
-    .pdfgen dir that contained it. Duplicates (same path found via multiple
-    roots) are removed.
-    """
+    """Discover templates in all .pdfgen dirs from cwd up to home."""
     out: list[dict[str, Any]] = []
     seen: set[Path] = set()
     for dot in dotpdfgen_dirs():
-        # Prefer .pdfgen/templates/, fall back to .pdfgen/ itself.
         roots = [dot / "templates", dot]
         for root in roots:
             if not root.is_dir():
@@ -189,42 +280,37 @@ def discover_dotpdfgen_templates() -> list[dict[str, Any]]:
 def find_dotpdfgen_template(name: str) -> Path | None:
     """Find a template by name in any .pdfgen dir from cwd up to home."""
     for t in discover_dotpdfgen_templates():
-        if t["name"] == name or t["path"].name == name:
+        if t["name"] == name or t["path"].stem == name:
             return t["path"]
     return None
 
 
-def _defaults_from_manifest(template_dir: Path) -> dict[str, Any]:
-    """Read manifest.json variables and return a defaults dict for optional vars."""
-    manifest = template_dir / "manifest.json"
-    if not manifest.exists():
-        return {}
-    try:
-        spec = json.loads(manifest.read_text())
-    except Exception:
-        return {}
+# ---------- defaults + rendering ----------
+
+def _defaults_from_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Return a defaults dict for optional variables that declare a default."""
     out: dict[str, Any] = {}
-    for name, var in (spec.get("variables") or {}).items():
+    for name, var in (manifest.get("variables") or {}).items():
         if not var.get("required", False) and "default" in var:
             out[name] = var["default"]
     return out
 
 
 def render_template(
-    template_dir: Path,
+    html_path: Path,
+    manifest: dict[str, Any],
     data: dict[str, Any],
     output_html: Path,
 ) -> Path:
-    """Render template.html from template_dir with data, write to output_html.
+    """Render an HTML template with data, write to output_html.
 
-    Optional variables declared in manifest.json with a `default` are injected
-    when missing from `data`, so StrictUndefined still catches truly missing
-    required variables.
+    Optional variables declared with a default are injected when missing from
+    data, so StrictUndefined still catches truly missing required variables.
     """
-    defaults = _defaults_from_manifest(template_dir)
+    defaults = _defaults_from_manifest(manifest)
     merged = {**defaults, **data}
-    env = _make_env(template_dir)
-    template = env.get_template("template.html")
+    env = _make_env(html_path.parent)
+    template = env.get_template(html_path.name)
     rendered = template.render(**merged)
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(rendered)

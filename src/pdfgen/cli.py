@@ -3,18 +3,25 @@
 Template driven PDF generation for agents and humans.
 
 Quick start:
-  pdfgen templates                       # list bundled templates
-  pdfgen new my-report --template report # scaffold a project from a template
-  pdfgen build --template report --data data.json --out report.pdf
+  pdfgen templates                       # list templates (bundled + local + .pdfgen)
+  pdfgen new my-report --template report # scaffold a template
+  pdfgen build --template report --data data.json -o report.pdf
+  pdfgen build --html my.html -o out.pdf # render any HTML file directly
   pdfgen merge a.pdf b.pdf -o merged.pdf
   pdfgen info report.pdf                 # page count, outline, size
 
-The build flow: data (JSON/YAML) + template (Jinja2 HTML) -> HTML -> PDF (Chromium).
+The build flow: data (JSON/YAML) + template (Jinja2 HTML with pdfgen: meta tags)
+-> HTML -> PDF (Chromium).
 Bundled templates: report, letter, invoice, blank.
+
+A template is any .html file with a <meta name="pdfgen:name" content="..."> tag.
+Variables are declared with <meta name="pdfgen:variable" content="title" data-required="true">.
+No manifest.json needed.
 """
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import typer
@@ -24,14 +31,17 @@ from rich.table import Table
 from . import __version__
 from .merge import Bookmark, add_outline, extract_outline, merge_pdfs
 from .renderer import PdfOptions, render_html_to_pdf
-from .scaffold import scaffold_project, scaffold_template, _sample_data_from_manifest
+from .scaffold import scaffold_template, _sample_data_from_manifest
 from .templating import (
     BUNDLED_TEMPLATES_DIR,
+    USER_TEMPLATES_DIR,
     discover_dotpdfgen_templates,
     discover_templates,
     load_data,
+    meta_to_manifest,
+    parse_template_meta,
     render_template,
-    resolve_template_dir,
+    resolve_template,
 )
 
 app = typer.Typer(add_completion=False, help="Template driven PDF generation CLI.")
@@ -59,7 +69,7 @@ def templates(
 
     Three sources are scanned:
       1. Bundled templates shipped with pdfgen.
-      2. Local templates: any dir with manifest.json + template.html found
+      2. Local templates: any .html with a pdfgen:name meta tag found
          recursively in the current working directory tree.
       3. .pdfgen templates: .pdfgen/templates/ dirs walking up from cwd to
          home (project -> parent dirs -> user level at ~/.pdfgen/templates).
@@ -71,14 +81,11 @@ def templates(
     for d in sorted(BUNDLED_TEMPLATES_DIR.iterdir()):
         if not d.is_dir():
             continue
-        manifest = d / "manifest.json"
-        desc = ""
-        if manifest.exists():
-            try:
-                desc = json.loads(manifest.read_text()).get("description", "")
-            except Exception:
-                pass
-        bundled.add_row(d.name, desc)
+        tfile = d / "template.html"
+        if not tfile.exists():
+            continue
+        meta = parse_template_meta(tfile)
+        bundled.add_row(meta.get("name", d.name), meta.get("description", ""))
     console.print(bundled)
 
     if not cwd:
@@ -112,32 +119,32 @@ def templates(
             table.add_row(t["name"], t["description"], str(t["source"]), str(t["path"]))
         console.print(table)
     else:
-        console.print("[dim]No .pdfgen templates found. Put templates in ~/.pdfgen/templates/<name>/[/dim]")
+        console.print("[dim]No .pdfgen templates found. Put .html templates in ~/.pdfgen/templates/<name>/[/dim]")
 
 
 @app.command()
 def new(
-    target: Path = typer.Argument(..., help="Target directory for the new project."),
+    target: Path = typer.Argument(..., help="Target directory for the new template."),
     template: str = typer.Option("blank", "--template", "-t", help="Bundled template to start from."),
-    name: str = typer.Option(None, "--name", help="Project/template name (defaults to dir name)."),
     user: bool = typer.Option(False, "--user", help="Scaffold into ~/.pdfgen/templates/<target> so it is available everywhere."),
 ) -> None:
-    """Scaffold a new pdfgen project at <target>.
+    """Scaffold a new pdfgen template at <target>.
 
+    Creates a template.html (with pdfgen: meta tags) and a data.json skeleton.
     With --user, the template is created under ~/.pdfgen/templates/<target> and
-    becomes available to pdfgen from any working directory (user level).
+    becomes available to pdfgen from any working directory.
     """
-    from .templating import USER_TEMPLATES_DIR
     if user:
         target = USER_TEMPLATES_DIR / target
     if target.exists() and any(target.iterdir()):
         raise typer.BadParameter(f"{target} is not empty")
     scaffold_template(template, target)
-    # Generate a data.json skeleton from the template's manifest so the
-    # project builds out of the box.
-    sample = _sample_data_from_manifest(target / "manifest.json")
+    # Generate a data.json skeleton from the template's meta tags.
+    meta = parse_template_meta(target / "template.html")
+    manifest = meta_to_manifest(meta) if meta else {"variables": {}}
+    sample = _sample_data_from_manifest(manifest)
     (target / "data.json").write_text(json.dumps(sample, indent=2))
-    console.print(f"[green]created[/green] project at {target}")
+    console.print(f"[green]created[/green] template at {target}")
     if user:
         console.print(f"  available globally as: pdfgen build -t {target.name} -d {target / 'data.json'} -o out.pdf")
     else:
@@ -147,8 +154,8 @@ def new(
 
 @app.command()
 def build(
-    template: str = typer.Option(None, "--template", "-t", help="Bundled template name."),
-    template_dir: Path = typer.Option(None, "--template-dir", help="Directory with template.html."),
+    template: str = typer.Option(None, "--template", "-t", help="Template name (bundled, local or .pdfgen)."),
+    template_dir: Path = typer.Option(None, "--template-dir", help="Directory with template.html, or a direct .html file."),
     html: Path = typer.Option(None, "--html", help="Pre rendered HTML file to convert directly."),
     data: Path = typer.Option(None, "--data", "-d", help="JSON/YAML data file."),
     output: Path = typer.Option(Path("output.pdf"), "--output", "-o", help="Output PDF path."),
@@ -166,16 +173,12 @@ def build(
     if html is not None:
         html_path = html
     else:
-        tdir = resolve_template_dir(name=template, template_dir=template_dir)
+        tpath, manifest = resolve_template(name=template, template_dir=template_dir, html=html)
         payload = load_data(data) if data else {}
         html_path = output.with_suffix(".html")
-        render_template(tdir, payload, html_path)
-        if not keep_html:
-            # will be cleaned up after build unless requested
-            pass
+        render_template(tpath, manifest, payload, html_path)
 
     # Resolve browser: --browser flag, then PDFGEN_BROWSER env, then auto detect.
-    import os
     channel = ""
     executable_path = ""
     raw = browser or os.environ.get("PDFGEN_BROWSER", "")
@@ -183,7 +186,7 @@ def build(
         if raw in ("chrome", "msedge", "chromium"):
             channel = raw
         else:
-            executable_path = raw  # treat as path to binary
+            executable_path = raw
 
     opts = PdfOptions(
         format=fmt,
