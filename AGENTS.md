@@ -47,10 +47,19 @@ tests/            unit tests for pure modules
 
 ## Adding a template
 
+Templates are discovered from three sources (first match wins for `--template <name>`):
+1. Bundled: `src/pdfgen/templates/<name>/`
+2. Local: any dir in cwd tree with `manifest.json` + `template.html` (recursive)
+3. .pdfgen: `.pdfgen/templates/` walking up from cwd to home (project -> parent dirs -> `~/.pdfgen/templates/`)
+
+To add a bundled template:
 1. Create `src/pdfgen/templates/<name>/` with `template.html` (Jinja2) and `manifest.json` (variable contract).
 2. The CLI auto discovers it via `pdfgen templates` and `pdfgen new --template <name>`.
 3. Add an example under `examples/<name>/data/data.json`.
 4. Add a unit test in `tests/test_core.py` asserting the template renders with sample data.
+
+To add a user level template: `pdfgen new <name> --template blank --user` (creates `~/.pdfgen/templates/<name>/`).
+To add a project level template: put it in `.pdfgen/templates/<name>/` at the project root.
 
 ## Conventions
 

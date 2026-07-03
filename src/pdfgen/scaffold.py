@@ -67,7 +67,11 @@ def scaffold_project(target: Path, name: str | None = None) -> Path:
 
 
 def scaffold_template(name: str, target: Path) -> Path:
-    """Copy a bundled template into target dir (for customization)."""
+    """Copy a bundled template into target dir (for customization).
+
+    Updates the manifest.json `name` field to match the target directory name
+    so discovery reports the correct name.
+    """
     src = BUNDLED_TEMPLATES_DIR / name
     if not src.exists():
         available = sorted(p.name for p in BUNDLED_TEMPLATES_DIR.iterdir() if p.is_dir())
@@ -75,4 +79,13 @@ def scaffold_template(name: str, target: Path) -> Path:
     target.mkdir(parents=True, exist_ok=True)
     for f in src.iterdir():
         shutil.copy2(f, target / f.name)
+    # Update manifest name to match target dir name.
+    manifest = target / "manifest.json"
+    if manifest.exists():
+        try:
+            spec = json.loads(manifest.read_text())
+            spec["name"] = target.name
+            manifest.write_text(json.dumps(spec, indent=2))
+        except Exception:
+            pass
     return target

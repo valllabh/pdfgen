@@ -55,7 +55,13 @@ Browser selection priority: `--browser` flag > `PDFGEN_BROWSER` env var > auto d
 
 ## Templates
 
-Bundled templates live in `src/pdfgen/templates/`. Each has a `template.html` (Jinja2) and a `manifest.json` describing its variables.
+Templates are discovered from three sources (first match wins when using `--template <name>`):
+
+1. **Bundled** - shipped with pdfgen in `src/pdfgen/templates/`
+2. **Local** - any directory in the current working tree with `manifest.json` + `template.html` (recursive)
+3. **.pdfgen** - `.pdfgen/templates/` directories walking up from cwd to home (project -> parent dirs -> user level at `~/.pdfgen/templates/`)
+
+A template is any directory containing both `manifest.json` and `template.html`.
 
 | name    | description                                          |
 |---------|------------------------------------------------------|
@@ -67,10 +73,23 @@ Bundled templates live in `src/pdfgen/templates/`. Each has a `template.html` (J
 To create a custom template, copy one and edit:
 
 ```bash
+# local template (in current directory)
 pdfgen new custom-doc --template blank
 # edit custom-doc/template.html and custom-doc/data.json
 pdfgen build --template-dir custom-doc --data custom-doc/data.json -o custom-doc.pdf
+
+# user level template (available everywhere via ~/.pdfgen/templates/)
+pdfgen new my-tpl --template blank --user
+# edit ~/.pdfgen/templates/my-tpl/template.html and data.json
+pdfgen build -t my-tpl -d ~/.pdfgen/templates/my-tpl/data.json -o out.pdf
+
+# project level template (in .pdfgen/templates/ at project root)
+mkdir -p .pdfgen/templates/my-tpl
+# add template.html and manifest.json there
+pdfgen build -t my-tpl -d data.json -o out.pdf
 ```
+
+`pdfgen templates` lists all three sources.
 
 ## Examples
 

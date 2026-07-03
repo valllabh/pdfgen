@@ -4,15 +4,20 @@ Templates are HTML files with Jinja2 variables. Data is loaded from JSON or
 YAML and injected. The result is a self contained HTML file ready for the
 renderer.
 
-Template resolution order:
-  1. --template <name>   -> bundled template dir (src/pdfgen/templates/<name>)
-  2. --template-dir <p>  -> explicit directory containing template.html
-  3. --html <file>       -> a single ad hoc HTML file (no data binding unless
+Template resolution order (first match wins):
+  1. --template-dir <p>  -> explicit directory containing template.html
+  2. --template <name>   -> bundled template (src/pdfgen/templates/<name>)
+  3. <name> in cwd tree  -> any dir with manifest.json + template.html
+                            discovered recursively from cwd
+  4. <name> in .pdfgen   -> .pdfgen/templates/<name> walking up from cwd
+                            to home (project -> parent dirs -> user level)
+  5. --html <file>       -> a single ad hoc HTML file (no data binding unless
                            it contains Jinja2 syntax; we still render it)
 """
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +26,10 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoes
 
 # Directory of bundled templates shipped with the package.
 BUNDLED_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+# User level template directory.
+USER_TEMPLATES_DIR = Path.home() / ".pdfgen" / "templates"
+# Marker directory name walked up from cwd to discover project/parent templates.
+PDFGEN_DIR_NAME = ".pdfgen"
 
 
 def load_data(path: Path) -> dict[str, Any]:
@@ -48,31 +57,38 @@ def resolve_template_dir(
 ) -> Path:
     """Resolve which directory holds the template.html to render.
 
-    Resolution order:
+    Resolution order (first match wins):
       1. template_dir (explicit directory containing template.html)
       2. bundled template named <name> in src/pdfgen/templates/
-      3. a template named <name> discovered in the current working tree
-         (any directory containing manifest.json + template.html whose
-         manifest name matches, or whose directory name matches)
+      3. <name> discovered in the current working tree (recursive)
+      4. <name> in .pdfgen/templates/ walking up from cwd to home
     """
     if template_dir is not None:
         if not (template_dir / "template.html").exists():
             raise FileNotFoundError(f"template.html not found in {template_dir}")
         return template_dir
     if name:
+        # 2. Bundled
         cand = BUNDLED_TEMPLATES_DIR / name
         if cand.exists():
             return cand
+        # 3. Local cwd tree (recursive)
         if search_cwd:
             local = find_local_template(name)
             if local is not None:
                 return local
+        # 4. .pdfgen/templates/ walking up from cwd to home
+        dot = find_dotpdfgen_template(name)
+        if dot is not None:
+            return dot
         available = sorted(p.name for p in BUNDLED_TEMPLATES_DIR.iterdir() if p.is_dir())
         local_names = [t["name"] for t in discover_templates(Path.cwd())] if search_cwd else []
+        dot_names = [t["name"] for t in discover_dotpdfgen_templates()]
         raise FileNotFoundError(
             f"template '{name}' not found. "
             f"Bundled: {', '.join(available) or '(none)'}. "
-            f"Local: {', '.join(local_names) or '(none)'}."
+            f"Local: {', '.join(local_names) or '(none)'}. "
+            f"User/.pdfgen: {', '.join(dot_names) or '(none)'}."
         )
     raise ValueError("either --template or --template-dir is required")
 
@@ -109,6 +125,70 @@ def find_local_template(name: str, root: Path | None = None) -> Path | None:
     """
     root = root or Path.cwd()
     for t in discover_templates(root):
+        if t["name"] == name or t["path"].name == name:
+            return t["path"]
+    return None
+
+
+def dotpdfgen_dirs(start: Path | None = None) -> list[Path]:
+    """Return .pdfgen directories walking up from start (cwd) to home.
+
+    Order: closest to cwd first, then parents, then ~/.pdfgen last.
+    Duplicates are removed while preserving order.
+    """
+    start = (start or Path.cwd()).resolve()
+    home = Path.home().resolve()
+    dirs: list[Path] = []
+    seen: set[Path] = set()
+    cur = start
+    while True:
+        cand = cur / PDFGEN_DIR_NAME
+        if cand.is_dir():
+            rp = cand.resolve()
+            if rp not in seen:
+                seen.add(rp)
+                dirs.append(rp)
+        if cur == home or cur.parent == cur:
+            break
+        cur = cur.parent
+    # Always include ~/.pdfgen even if cwd is not under home.
+    user_dir = (home / PDFGEN_DIR_NAME).resolve()
+    if user_dir not in seen and user_dir.is_dir():
+        dirs.append(user_dir)
+    return dirs
+
+
+def discover_dotpdfgen_templates() -> list[dict[str, Any]]:
+    """Discover templates in all .pdfgen/templates/ dirs from cwd up to home.
+
+    Each .pdfgen dir is treated as a templates root: we look for either
+    .pdfgen/templates/<name>/{manifest.json,template.html} or
+    .pdfgen/<name>/{manifest.json,template.html}.
+    Returns list of {name, description, path, source} where source is the
+    .pdfgen dir that contained it. Duplicates (same path found via multiple
+    roots) are removed.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    for dot in dotpdfgen_dirs():
+        # Prefer .pdfgen/templates/, fall back to .pdfgen/ itself.
+        roots = [dot / "templates", dot]
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for t in discover_templates(root):
+                rp = t["path"].resolve()
+                if rp in seen:
+                    continue
+                seen.add(rp)
+                t["source"] = dot
+                out.append(t)
+    return out
+
+
+def find_dotpdfgen_template(name: str) -> Path | None:
+    """Find a template by name in any .pdfgen dir from cwd up to home."""
+    for t in discover_dotpdfgen_templates():
         if t["name"] == name or t["path"].name == name:
             return t["path"]
     return None

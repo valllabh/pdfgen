@@ -27,6 +27,7 @@ from .renderer import PdfOptions, render_html_to_pdf
 from .scaffold import scaffold_project, scaffold_template, _sample_data_from_manifest
 from .templating import (
     BUNDLED_TEMPLATES_DIR,
+    discover_dotpdfgen_templates,
     discover_templates,
     load_data,
     render_template,
@@ -52,12 +53,16 @@ def main(
 
 @app.command()
 def templates(
-    cwd: bool = typer.Option(True, "--cwd/--no-cwd", help="Also list templates discovered in the current directory tree."),
+    cwd: bool = typer.Option(True, "--cwd/--no-cwd", help="Also list templates discovered in the current directory tree and .pdfgen dirs."),
 ) -> None:
-    """List bundled templates and any templates found in the current directory tree.
+    """List bundled, local and user level templates.
 
-    A template is any directory containing both manifest.json and template.html.
-    Discovery is recursive from the current working directory.
+    Three sources are scanned:
+      1. Bundled templates shipped with pdfgen.
+      2. Local templates: any dir with manifest.json + template.html found
+         recursively in the current working directory tree.
+      3. .pdfgen templates: .pdfgen/templates/ dirs walking up from cwd to
+         home (project -> parent dirs -> user level at ~/.pdfgen/templates).
     """
     # Bundled
     bundled = Table(title="Bundled templates")
@@ -81,21 +86,33 @@ def templates(
 
     # Local (recursive from cwd)
     local = discover_templates(Path.cwd())
-    # Exclude bundled templates that happen to be under cwd (e.g. running from repo root).
     bundled_resolved = BUNDLED_TEMPLATES_DIR.resolve()
     local = [t for t in local if t["path"].resolve() != bundled_resolved and
              not t["path"].resolve().is_relative_to(bundled_resolved)]
-    if not local:
+    if local:
+        table = Table(title="Local templates (current directory tree)")
+        table.add_column("name", style="cyan")
+        table.add_column("description")
+        table.add_column("path", style="dim")
+        for t in sorted(local, key=lambda x: x["name"]):
+            table.add_row(t["name"], t["description"], str(t["path"]))
+        console.print(table)
+    else:
         console.print("[dim]No local templates found in current directory.[/dim]")
-        console.print("[dim]A template is any dir with manifest.json + template.html.[/dim]")
-        return
-    table = Table(title="Local templates (current directory tree)")
-    table.add_column("name", style="cyan")
-    table.add_column("description")
-    table.add_column("path", style="dim")
-    for t in sorted(local, key=lambda x: x["name"]):
-        table.add_row(t["name"], t["description"], str(t["path"]))
-    console.print(table)
+
+    # .pdfgen templates (walking up from cwd to home)
+    dot = discover_dotpdfgen_templates()
+    if dot:
+        table = Table(title=".pdfgen templates (cwd up to ~/.pdfgen)")
+        table.add_column("name", style="cyan")
+        table.add_column("description")
+        table.add_column("source", style="dim")
+        table.add_column("path", style="dim")
+        for t in sorted(dot, key=lambda x: (str(x["source"]), x["name"])):
+            table.add_row(t["name"], t["description"], str(t["source"]), str(t["path"]))
+        console.print(table)
+    else:
+        console.print("[dim]No .pdfgen templates found. Put templates in ~/.pdfgen/templates/<name>/[/dim]")
 
 
 @app.command()
@@ -103,8 +120,16 @@ def new(
     target: Path = typer.Argument(..., help="Target directory for the new project."),
     template: str = typer.Option("blank", "--template", "-t", help="Bundled template to start from."),
     name: str = typer.Option(None, "--name", help="Project/template name (defaults to dir name)."),
+    user: bool = typer.Option(False, "--user", help="Scaffold into ~/.pdfgen/templates/<target> so it is available everywhere."),
 ) -> None:
-    """Scaffold a new pdfgen project at <target>."""
+    """Scaffold a new pdfgen project at <target>.
+
+    With --user, the template is created under ~/.pdfgen/templates/<target> and
+    becomes available to pdfgen from any working directory (user level).
+    """
+    from .templating import USER_TEMPLATES_DIR
+    if user:
+        target = USER_TEMPLATES_DIR / target
     if target.exists() and any(target.iterdir()):
         raise typer.BadParameter(f"{target} is not empty")
     scaffold_template(template, target)
@@ -113,8 +138,11 @@ def new(
     sample = _sample_data_from_manifest(target / "manifest.json")
     (target / "data.json").write_text(json.dumps(sample, indent=2))
     console.print(f"[green]created[/green] project at {target}")
-    console.print(f"  edit {target / 'data.json'} then run:")
-    console.print(f"  pdfgen build --template-dir {target} --data {target / 'data.json'} -o out.pdf")
+    if user:
+        console.print(f"  available globally as: pdfgen build -t {target.name} -d {target / 'data.json'} -o out.pdf")
+    else:
+        console.print(f"  edit {target / 'data.json'} then run:")
+        console.print(f"  pdfgen build --template-dir {target} --data {target / 'data.json'} -o out.pdf")
 
 
 @app.command()
